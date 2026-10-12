@@ -1,0 +1,114 @@
+name: Release
+
+# Push a tag like v0.1.0 to build binaries, publish a GitHub Release,
+# and update release.json (URLs + hashes) on the default branch.
+on:
+  push:
+    tags: ["v*.*.*"]
+
+permissions:
+  contents: write
+
+concurrency:
+  group: release
+  cancel-in-progress: false
+
+jobs:
+  build:
+    name: build ${{ matrix.system }}
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: true
+      matrix:
+        include:
+          # Linux binaries are static (musl) so they run on NixOS unpatched.
+          - { system: x86_64-linux,   os: ubuntu-24.04,     target: x86_64-unknown-linux-musl }
+          - { system: aarch64-linux,  os: ubuntu-24.04-arm, target: aarch64-unknown-linux-musl }
+          - { system: x86_64-darwin,  os: macos-latest,     target: x86_64-apple-darwin }
+          - { system: aarch64-darwin, os: macos-latest,     target: aarch64-apple-darwin }
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Tag must match Cargo.toml version
+        shell: bash
+        run: |
+          cargo_version=$(sed -n 's/^version = "\(.*\)"/\1/p' Cargo.toml | head -n1)
+          if [ "v${cargo_version}" != "${GITHUB_REF_NAME}" ]; then
+            echo "Tag ${GITHUB_REF_NAME} does not match Cargo.toml version v${cargo_version}" >&2
+            exit 1
+          fi
+
+      - name: Install musl toolchain
+        if: contains(matrix.target, 'musl')
+        run: sudo apt-get update && sudo apt-get install -y musl-tools
+
+      - name: Add Rust target
+        run: rustup target add ${{ matrix.target }}
+
+      - name: Test
+        # Skip cross-compiled targets that can't run on this runner.
+        if: matrix.target != 'x86_64-apple-darwin'
+        run: cargo test --locked --release --target ${{ matrix.target }}
+
+      - name: Build
+        run: cargo build --locked --release --target ${{ matrix.target }}
+
+      - name: Package
+        shell: bash
+        run: |
+          mkdir -p dist
+          tar -C target/${{ matrix.target }}/release -czf \
+            "dist/nixos-status-${GITHUB_REF_NAME}-${{ matrix.system }}.tar.gz" nixos-status
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: dist-${{ matrix.system }}
+          path: dist/*.tar.gz
+          if-no-files-found: error
+
+  publish:
+    needs: build
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.repository.default_branch }}
+          path: repo
+
+      - uses: actions/download-artifact@v4
+        with:
+          path: dist
+          pattern: dist-*
+          merge-multiple: true
+
+      - name: Create GitHub Release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release create "${GITHUB_REF_NAME}" dist/*.tar.gz \
+            --repo "${GITHUB_REPOSITORY}" \
+            --title "${GITHUB_REF_NAME}" \
+            --generate-notes
+
+      - name: Update release.json with URLs and hashes
+        run: |
+          version="${GITHUB_REF_NAME#v}"
+          json=$(jq -n --arg v "$version" '{version: $v, assets: {}}')
+          for system in x86_64-linux aarch64-linux x86_64-darwin aarch64-darwin; do
+            file="nixos-status-${GITHUB_REF_NAME}-${system}.tar.gz"
+            hash="sha256-$(openssl dgst -sha256 -binary "dist/${file}" | base64)"
+            url="https://github.com/${GITHUB_REPOSITORY}/releases/download/${GITHUB_REF_NAME}/${file}"
+            json=$(echo "$json" | jq --arg s "$system" --arg u "$url" --arg h "$hash" \
+              '.assets[$s] = {url: $u, hash: $h}')
+          done
+          echo "$json" > repo/release.json
+          cat repo/release.json
+
+      - name: Commit release.json
+        working-directory: repo
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add release.json
+          git commit -m "release: ${GITHUB_REF_NAME} binaries [skip ci]"
+          git push
