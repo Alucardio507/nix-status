@@ -1,6 +1,7 @@
 [package]
 name = "nixos-status"
 version = "0.1.0"
+edition = "2024"
 description = "terminal display for NixOS channel status"
 license = "MIT"
 readme = "README.md"
