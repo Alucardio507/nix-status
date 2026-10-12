@@ -382,11 +382,11 @@ fn main_result() -> Result<(), String> {
         };
         let commit: String = channel.revision.chars().take(10).collect();
         println!(
-            "{}{}{}{}{}",
+            "{}{}{}{:<12}{}",
             marker,
             name,
             paint(ansi, &color, &format!("{updated:<14}")),
-            format!("{commit:<12}"),
+            commit,
             channel.status
         );
     }
