@@ -1,4 +1,21 @@
 {
-  "version": "0.0.0",
-  "assets": {}
+  "version": "0.1.0",
+  "assets": {
+    "x86_64-linux": {
+      "url": "https://github.com/Alucardio507/nix-status/releases/download/v0.1.0/nixos-status-v0.1.0-x86_64-linux.tar.gz",
+      "hash": "sha256-9N9FBaomxhyUMTJ2T2jnKd4smR1tMLms/P9o71xnxsg="
+    },
+    "aarch64-linux": {
+      "url": "https://github.com/Alucardio507/nix-status/releases/download/v0.1.0/nixos-status-v0.1.0-aarch64-linux.tar.gz",
+      "hash": "sha256-y6dy3Zr+4xYBN/P9XNS5tz41DxpJBY1hjb11Ne+VxhY="
+    },
+    "x86_64-darwin": {
+      "url": "https://github.com/Alucardio507/nix-status/releases/download/v0.1.0/nixos-status-v0.1.0-x86_64-darwin.tar.gz",
+      "hash": "sha256-7fJZfIhMi3fOZLuJoZY6vmO/r1hrkWSmQWtAAy37Tzw="
+    },
+    "aarch64-darwin": {
+      "url": "https://github.com/Alucardio507/nix-status/releases/download/v0.1.0/nixos-status-v0.1.0-aarch64-darwin.tar.gz",
+      "hash": "sha256-shmDcjiLqbIGupPjZGJKsT5ve59ZXM5nclw9cAkSezw="
+    }
+  }
 }
