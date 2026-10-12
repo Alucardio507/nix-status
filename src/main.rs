@@ -37,18 +37,19 @@ fn run(command: &str, args: &[&str]) -> String {
 }
 
 /// Query the public Prometheus API and return its `data.result` array.
-fn query(client: &Client, metric: &str) -> Result<Vec<Value>, String> {
+/// Query the public Prometheus API and return its `data.result` array.
+fn query(agent: &ureq::Agent, metric: &str) -> Result<Vec<Value>, String> {
     // `metric` is an internal constant (e.g. "channel_revision"), so it does
-    // not need URL escaping. Using reqwest keeps HTTPS and response handling in
-    // Rust rather than shelling out to curl.
+    // not need URL escaping.
     let url = format!("{PROMETHEUS_API}?query={metric}");
-    let response = client
+    let mut response = agent
         .get(&url)
-        .send()
+        .call()
         .map_err(|error| format!("network request failed for {metric}: {error}"))?;
     let status = response.status();
     let body = response
-        .text()
+        .body_mut()
+        .read_to_string()
         .map_err(|error| format!("could not read Prometheus response for {metric}: {error}"))?;
 
     if !status.is_success() {
@@ -187,18 +188,20 @@ fn now_seconds() -> f64 {
 }
 
 fn main_result() -> Result<(), String> {
-    let client = Client::builder()
-        .timeout(REQUEST_TIMEOUT)
+    let agent: ureq::Agent = ureq::Agent::config_builder()
+        .timeout_global(Some(REQUEST_TIMEOUT))
         .user_agent(concat!(
             env!("CARGO_PKG_NAME"),
             "/",
             env!("CARGO_PKG_VERSION")
         ))
+        // Keep HTTP error responses so we can show Prometheus's error detail.
+        .http_status_as_error(false)
         .build()
-        .map_err(|error| format!("could not initialize HTTP client: {error}"))?;
+        .into();
 
-    let revision_rows = query(&client, "channel_revision")?;
-    let update_rows = query(&client, "channel_update_time")?;
+    let revision_rows = query(&agent, "channel_revision")?;
+    let update_rows = query(&agent, "channel_update_time")?;
 
     let mut revisions: HashMap<String, Channel> = HashMap::new();
     for row in &revision_rows {
@@ -333,10 +336,11 @@ fn main_result() -> Result<(), String> {
         }
     }
 
+    push_line(&mut lines, "", "");
     if let Some(version) = system_version.as_deref() {
-        push_line(&mut lines, "", "");
         push_kv(&mut lines, ansi, "NixOS version", version, "1");
     }
+    push_kv(&mut lines, ansi, "nixos-status", env!("CARGO_PKG_VERSION"), "1");
 
     println!("{}", box_lines(&lines));
     println!();
