@@ -240,7 +240,9 @@ fn main_result() -> Result<(), String> {
         used.extend(
             revisions
                 .iter()
-                .filter(|(_, channel)| Some(channel.revision.as_str()) == system_revision.as_deref())
+                .filter(|(_, channel)| {
+                    Some(channel.revision.as_str()) == system_revision.as_deref()
+                })
                 .map(|(name, _)| name.clone()),
         );
     }
