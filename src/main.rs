@@ -340,7 +340,13 @@ fn main_result() -> Result<(), String> {
     if let Some(version) = system_version.as_deref() {
         push_kv(&mut lines, ansi, "NixOS version", version, "1");
     }
-    push_kv(&mut lines, ansi, "nixos-status", env!("CARGO_PKG_VERSION"), "1");
+    push_kv(
+        &mut lines,
+        ansi,
+        "nixos-status",
+        env!("CARGO_PKG_VERSION"),
+        "1",
+    );
 
     println!("{}", box_lines(&lines));
     println!();
