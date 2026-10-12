@@ -79,10 +79,7 @@ fn query(client: &Client, metric: &str) -> Result<Vec<Value>, String> {
 }
 
 fn label(row: &Value, name: &str) -> Option<String> {
-    row.get("metric")?
-        .get(name)?
-        .as_str()
-        .map(str::to_owned)
+    row.get("metric")?.get(name)?.as_str().map(str::to_owned)
 }
 
 fn age(seconds: f64) -> String {
@@ -192,7 +189,11 @@ fn now_seconds() -> f64 {
 fn main_result() -> Result<(), String> {
     let client = Client::builder()
         .timeout(REQUEST_TIMEOUT)
-        .user_agent(concat!(env!("CARGO_PKG_NAME"), "/", env!("CARGO_PKG_VERSION")))
+        .user_agent(concat!(
+            env!("CARGO_PKG_NAME"),
+            "/",
+            env!("CARGO_PKG_VERSION")
+        ))
         .build()
         .map_err(|error| format!("could not initialize HTTP client: {error}"))?;
 
@@ -231,7 +232,10 @@ fn main_result() -> Result<(), String> {
     }
 
     let (local_channels, system_revision, system_version) = local_info();
-    let mut used: HashSet<String> = local_channels.iter().map(|(_, name)| name.clone()).collect();
+    let mut used: HashSet<String> = local_channels
+        .iter()
+        .map(|(_, name)| name.clone())
+        .collect();
     if let Some(system_revision) = system_revision.as_deref() {
         if used.is_empty() {
             used.extend(
@@ -249,7 +253,10 @@ fn main_result() -> Result<(), String> {
         names.sort();
         names
     } else {
-        local_channels.iter().map(|(_, name)| name.clone()).collect()
+        local_channels
+            .iter()
+            .map(|(_, name)| name.clone())
+            .collect()
     };
     let labels: HashMap<String, String> = local_channels
         .iter()
@@ -350,7 +357,10 @@ fn main_result() -> Result<(), String> {
         paint(
             ansi,
             "1",
-            &format!("  {:<26}{:<14}{:<12}STATUS", "CHANNEL", "LAST UPDATED", "COMMIT")
+            &format!(
+                "  {:<26}{:<14}{:<12}STATUS",
+                "CHANNEL", "LAST UPDATED", "COMMIT"
+            )
         )
     );
     for channel in rows {
