@@ -1,4 +1,3 @@
-use reqwest::blocking::Client;
 use serde_json::Value;
 use std::collections::{HashMap, HashSet};
 use std::io::{self, IsTerminal};
