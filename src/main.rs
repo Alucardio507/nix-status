@@ -237,14 +237,12 @@ fn main_result() -> Result<(), String> {
         .map(|(_, name)| name.clone())
         .collect();
     if used.is_empty() {
-        if let Some(system_revision) = system_revision.as_deref() {
-            used.extend(
-                revisions
-                    .iter()
-                    .filter(|(_, channel)| channel.revision == system_revision)
-                    .map(|(name, _)| name.clone()),
-            );
-        }
+        used.extend(
+            revisions
+                .iter()
+                .filter(|(_, channel)| Some(channel.revision.as_str()) == system_revision.as_deref())
+                .map(|(name, _)| name.clone()),
+        );
     }
 
     let now = now_seconds();
