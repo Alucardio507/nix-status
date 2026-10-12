@@ -236,8 +236,8 @@ fn main_result() -> Result<(), String> {
         .iter()
         .map(|(_, name)| name.clone())
         .collect();
-    if let Some(system_revision) = system_revision.as_deref() {
-        if used.is_empty() {
+    if used.is_empty() {
+        if let Some(system_revision) = system_revision.as_deref() {
             used.extend(
                 revisions
                     .iter()
