@@ -1,4 +1,10 @@
-use serde_json::Value;
+//! nixos-status: show how fresh your NixOS channel(s) are, using
+//! the public NixOS Prometheus instance.
+//!
+//! Flags: --json, --no-color, -h/--help, -V/--version
+//! Env:   NO_COLOR is respected.
+
+use serde_json::{Value, json};
 use std::collections::{HashMap, HashSet};
 use std::io::{self, IsTerminal};
 use std::process::Command;
@@ -6,50 +12,191 @@ use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 const PROMETHEUS_API: &str = "https://prometheus.nixos.org/api/v1/query";
 const REQUEST_TIMEOUT: Duration = Duration::from_secs(15);
+const DAY: f64 = 86_400.0;
+const FRESH_DAYS: f64 = 2.0;
+const AGING_DAYS: f64 = 5.0;
+const LABEL_WIDTH: usize = 14;
+
+// ───────────────────────────── data types ─────────────────────────────
 
 #[derive(Debug, Clone)]
 struct Channel {
     name: String,
     revision: String,
     status: String,
+    /// Unix timestamp of the last channel update, if known.
+    updated: Option<f64>,
 }
 
-fn ansi_enabled() -> bool {
-    io::stdout().is_terminal()
-}
-
-fn paint(enabled: bool, code: &str, text: &str) -> String {
-    if enabled {
-        format!("\x1b[{code}m{text}\x1b[0m")
-    } else {
-        text.to_owned()
+impl Channel {
+    fn age(&self, now: f64) -> Option<f64> {
+        self.updated.map(|ts| now - ts)
     }
-}
-
-fn run(command: &str, args: &[&str]) -> String {
-    match Command::new(command).args(args).output() {
-        Ok(output) if output.status.success() => {
-            String::from_utf8_lossy(&output.stdout).into_owned()
+    fn freshness(&self, now: f64) -> Freshness {
+        Freshness::from_age(self.updated.filter(|ts| *ts > 0.0).map(|ts| now - ts))
+    }
+    fn status_order(&self) -> u8 {
+        match self.status.as_str() {
+            "stable" => 0,
+            "rolling" => 1,
+            "beta" => 2,
+            _ => 9,
         }
-        _ => String::new(),
     }
 }
 
-/// Query the public Prometheus API and return its `data.result` array.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Freshness {
+    Fresh,
+    Aging,
+    Stale,
+}
+
+impl Freshness {
+    fn from_age(age_secs: Option<f64>) -> Self {
+        match age_secs {
+            Some(a) if a < FRESH_DAYS * DAY => Self::Fresh,
+            Some(a) if a < AGING_DAYS * DAY => Self::Aging,
+            _ => Self::Stale,
+        }
+    }
+    /// Plain ANSI color code (no bold).
+    fn color(self) -> &'static str {
+        match self {
+            Self::Fresh => "32",
+            Self::Aging => "33",
+            Self::Stale => "31",
+        }
+    }
+}
+
+#[derive(Debug, Default)]
+struct LocalInfo {
+    /// (label, channel name) pairs from `nix-channel --list`.
+    channels: Vec<(String, String)>,
+    revision: Option<String>,
+    version: Option<String>,
+}
+
+#[derive(Debug, Default)]
+struct Options {
+    json: bool,
+    color: bool,
+}
+
+// ───────────────────────────── styling ─────────────────────────────
+
+#[derive(Clone, Copy)]
+struct Style {
+    enabled: bool,
+}
+
+impl Style {
+    fn paint(self, code: &str, text: &str) -> String {
+        if self.enabled && !code.is_empty() {
+            format!("\x1b[{code}m{text}\x1b[0m")
+        } else {
+            text.to_owned()
+        }
+    }
+}
+
+/// A line that tracks its plain text (for width) and styled text (for output)
+/// together, so the two can never drift apart.
+#[derive(Default)]
+struct Line {
+    plain: String,
+    styled: String,
+}
+
+impl Line {
+    fn push(&mut self, style: Style, code: &str, text: &str) -> &mut Self {
+        self.plain.push_str(text);
+        self.styled.push_str(&style.paint(code, text));
+        self
+    }
+}
+
+fn kv(style: Style, label: &str, value: &str, value_code: &str) -> Line {
+    let mut line = Line::default();
+    line.push(style, "2", &format!("{label:<LABEL_WIDTH$}"))
+        .push(style, value_code, value);
+    line
+}
+
+fn box_lines(lines: &[Line]) -> String {
+    // NOTE: chars().count() is fine for the glyphs used here; use the
+    // `unicode-width` crate if you ever print CJK or emoji.
+    let width = lines
+        .iter()
+        .map(|l| l.plain.chars().count())
+        .max()
+        .unwrap_or(0);
+    let mut out = Vec::with_capacity(lines.len() + 2);
+    out.push(format!("╭{}╮", "─".repeat(width + 2)));
+    for l in lines {
+        let pad = width.saturating_sub(l.plain.chars().count());
+        out.push(format!("│ {}{} │", l.styled, " ".repeat(pad)));
+    }
+    out.push(format!("╰{}╯", "─".repeat(width + 2)));
+    out.join("\n")
+}
+
+// ───────────────────────────── helpers ─────────────────────────────
+
+fn age_string(seconds: f64) -> String {
+    let total = seconds.max(0.0) as u64;
+    let (days, hours, minutes) = (
+        total / 86_400,
+        (total % 86_400) / 3_600,
+        (total % 3_600) / 60,
+    );
+    if days > 0 {
+        format!("{days}d {hours}h")
+    } else if hours > 0 {
+        format!("{hours}h {minutes}m")
+    } else {
+        format!("{minutes}m")
+    }
+}
+
+fn short(rev: &str, n: usize) -> String {
+    rev.chars().take(n).collect()
+}
+
+fn now_seconds() -> f64 {
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_secs_f64()
+}
+
+fn run(command: &str, args: &[&str]) -> Option<String> {
+    let output = Command::new(command).args(args).output().ok()?;
+    output
+        .status
+        .success()
+        .then(|| String::from_utf8_lossy(&output.stdout).into_owned())
+}
+
+fn label(row: &Value, name: &str) -> Option<String> {
+    row.get("metric")?.get(name)?.as_str().map(str::to_owned)
+}
+
+// ───────────────────────────── network ─────────────────────────────
+
 /// Query the public Prometheus API and return its `data.result` array.
 fn query(agent: &ureq::Agent, metric: &str) -> Result<Vec<Value>, String> {
-    // `metric` is an internal constant (e.g. "channel_revision"), so it does
-    // not need URL escaping.
-    let url = format!("{PROMETHEUS_API}?query={metric}");
     let mut response = agent
-        .get(&url)
+        .get(PROMETHEUS_API)
+        .query("query", metric) // let ureq do the escaping
         .call()
-        .map_err(|error| format!("network request failed for {metric}: {error}"))?;
+        .map_err(|e| format!("network request failed for {metric}: {e}"))?;
     let status = response.status();
     let body = response
         .body_mut()
         .read_to_string()
-        .map_err(|error| format!("could not read Prometheus response for {metric}: {error}"))?;
+        .map_err(|e| format!("could not read Prometheus response for {metric}: {e}"))?;
 
     if !status.is_success() {
         let detail = body.trim();
@@ -61,7 +208,7 @@ fn query(agent: &ureq::Agent, metric: &str) -> Result<Vec<Value>, String> {
     }
 
     let payload: Value = serde_json::from_str(&body)
-        .map_err(|error| format!("invalid JSON from Prometheus for {metric}: {error}"))?;
+        .map_err(|e| format!("invalid JSON from Prometheus for {metric}: {e}"))?;
 
     if payload.get("status").and_then(Value::as_str) != Some("success") {
         let detail = payload
@@ -78,115 +225,250 @@ fn query(agent: &ureq::Agent, metric: &str) -> Result<Vec<Value>, String> {
         .ok_or_else(|| format!("malformed Prometheus response for {metric}: missing data.result"))
 }
 
-fn label(row: &Value, name: &str) -> Option<String> {
-    row.get("metric")?.get(name)?.as_str().map(str::to_owned)
-}
+/// Fetch both metrics in parallel and merge them into one list of channels.
+fn fetch_channels(agent: &ureq::Agent) -> Result<Vec<Channel>, String> {
+    let (revision_rows, update_rows) = std::thread::scope(|s| {
+        let revs = s.spawn(|| query(agent, "channel_revision"));
+        let upds = s.spawn(|| query(agent, "channel_update_time"));
+        (
+            revs.join()
+                .unwrap_or_else(|_| Err("worker thread panicked".into())),
+            upds.join()
+                .unwrap_or_else(|_| Err("worker thread panicked".into())),
+        )
+    });
+    let (revision_rows, update_rows) = (revision_rows?, update_rows?);
 
-fn age(seconds: f64) -> String {
-    let total = seconds.max(0.0) as u64;
-    let days = total / 86_400;
-    let hours = (total % 86_400) / 3_600;
-    let minutes = (total % 3_600) / 60;
-
-    if days > 0 {
-        format!("{days}d {hours}h")
-    } else if hours > 0 {
-        format!("{hours}h {minutes}m")
-    } else {
-        format!("{minutes}m")
-    }
-}
-
-fn age_color(now: f64, timestamp: Option<f64>) -> &'static str {
-    match timestamp {
-        Some(ts) if ts > 0.0 && now - ts < 2.0 * 86_400.0 => "1;32",
-        Some(ts) if ts > 0.0 && now - ts < 5.0 * 86_400.0 => "1;33",
-        _ => "1;31",
-    }
-}
-
-fn box_lines(lines: &[(String, String)]) -> String {
-    let width = lines
+    // Prometheus encodes sample values as strings: ["<ts>", "<value>"].
+    let updates: HashMap<String, f64> = update_rows
         .iter()
-        .map(|(plain, _)| plain.chars().count())
-        .max()
-        .unwrap_or(0);
-    let mut output = Vec::with_capacity(lines.len() + 2);
-    output.push(format!("╭{}╮", "─".repeat(width + 2)));
-    for (plain, styled) in lines {
-        let padding = width.saturating_sub(plain.chars().count());
-        output.push(format!("│ {styled}{} │", " ".repeat(padding)));
+        .filter_map(|row| {
+            let name = label(row, "channel")?;
+            let ts = row.pointer("/value/1")?.as_str()?.parse::<f64>().ok()?;
+            Some((name, ts))
+        })
+        .collect();
+
+    let mut channels: Vec<Channel> = revision_rows
+        .iter()
+        .filter_map(|row| {
+            let name = label(row, "channel")?;
+            Some(Channel {
+                updated: updates.get(&name).copied(),
+                revision: label(row, "revision").unwrap_or_else(|| "?".into()),
+                status: label(row, "status").unwrap_or_else(|| "?".into()),
+                name,
+            })
+        })
+        .collect();
+
+    if channels.is_empty() {
+        return Err("No channel data returned.".into());
     }
-    output.push(format!("╰{}╯", "─".repeat(width + 2)));
-    output.join("\n")
+    channels.sort_by(|a, b| (a.status_order(), &a.name).cmp(&(b.status_order(), &b.name)));
+    channels.dedup_by(|a, b| a.name == b.name);
+    Ok(channels)
 }
 
-fn local_info() -> (Vec<(String, String)>, Option<String>, Option<String>) {
-    let mut channels = Vec::new();
-    for line in run("nix-channel", &["--list"]).lines() {
-        let parts: Vec<&str> = line.split_whitespace().collect();
-        if parts.len() == 2 {
-            let channel_name = parts[1]
-                .trim_end_matches('/')
-                .rsplit('/')
-                .next()
-                .unwrap_or(parts[1])
-                .to_owned();
-            channels.push((parts[0].to_owned(), channel_name));
+// ───────────────────────────── local system ─────────────────────────────
+
+fn local_info() -> LocalInfo {
+    let channels = run("nix-channel", &["--list"])
+        .unwrap_or_default()
+        .lines()
+        .filter_map(|line| {
+            let mut parts = line.split_whitespace();
+            let (label, url) = (parts.next()?, parts.next()?);
+            if parts.next().is_some() {
+                return None;
+            }
+            let name = url.trim_end_matches('/').rsplit('/').next().unwrap_or(url);
+            Some((label.to_owned(), name.to_owned()))
+        })
+        .collect();
+
+    let parsed =
+        run("nixos-version", &["--json"]).and_then(|s| serde_json::from_str::<Value>(&s).ok());
+    let field = |key: &str| {
+        parsed
+            .as_ref()?
+            .get(key)?
+            .as_str()
+            .filter(|v| !v.is_empty())
+            .map(str::to_owned)
+    };
+
+    LocalInfo {
+        channels,
+        revision: field("nixpkgsRevision"),
+        version: field("nixosVersion"),
+    }
+}
+
+// ───────────────────────────── rendering ─────────────────────────────
+
+fn render_summary(
+    style: Style,
+    now: f64,
+    channels: &[Channel],
+    local: &LocalInfo,
+    names: &[String],
+) -> String {
+    let by_name: HashMap<&str, &Channel> = channels.iter().map(|c| (c.name.as_str(), c)).collect();
+    let labels: HashMap<&str, &str> = local
+        .channels
+        .iter()
+        .map(|(l, n)| (n.as_str(), l.as_str()))
+        .collect();
+
+    let mut lines = Vec::new();
+    let mut title = Line::default();
+    title.push(style, "1", "Your NixOS channel");
+    lines.push(title);
+
+    if names.is_empty() {
+        let mut l = Line::default();
+        l.push(
+            style,
+            "2",
+            "unknown (no nix-channel entries; flake/pinned system?)",
+        );
+        lines.push(l);
+    }
+
+    for name in names {
+        lines.push(Line::default());
+
+        let mut head = Line::default();
+        head.push(style, "1;36", &format!("▶ {name}"));
+        if let Some(l) = labels.get(name.as_str()) {
+            head.push(style, "", &format!("  ({l})"));
+        }
+        lines.push(head);
+
+        let Some(channel) = by_name.get(name.as_str()) else {
+            lines.push(kv(style, "Status", "not listed on status page", "33"));
+            continue;
+        };
+
+        let updated = channel
+            .age(now)
+            .map(|a| format!("{} ago", age_string(a)))
+            .unwrap_or_else(|| "?".into());
+        let color = format!("1;{}", channel.freshness(now).color());
+        lines.push(kv(style, "Last updated", &updated, &color));
+        lines.push(kv(style, "Commit", &short(&channel.revision, 12), "1"));
+        lines.push(kv(style, "Status", &channel.status, "1"));
+
+        if let Some(sys) = local.revision.as_deref() {
+            if sys == channel.revision {
+                lines.push(kv(style, "Your system", "at channel head", "1;32"));
+            } else {
+                let text = format!("on {} (differs)", short(sys, 12));
+                lines.push(kv(style, "Your system", &text, "1;33"));
+            }
         }
     }
 
-    let version_json = run("nixos-version", &["--json"]);
-    let parsed = serde_json::from_str::<Value>(&version_json).ok();
-    let revision = parsed
-        .as_ref()
-        .and_then(|value| value.get("nixpkgsRevision"))
-        .and_then(Value::as_str)
-        .filter(|value| !value.is_empty())
-        .map(str::to_owned);
-    let version = parsed
-        .as_ref()
-        .and_then(|value| value.get("nixosVersion"))
-        .and_then(Value::as_str)
-        .filter(|value| !value.is_empty())
-        .map(str::to_owned);
-
-    (channels, revision, version)
+    lines.push(Line::default());
+    if let Some(v) = local.version.as_deref() {
+        lines.push(kv(style, "NixOS version", v, "1"));
+    }
+    lines.push(kv(style, "nixos-status", env!("CARGO_PKG_VERSION"), "1"));
+    box_lines(&lines)
 }
 
-fn push_line(
-    lines: &mut Vec<(String, String)>,
-    plain: impl Into<String>,
-    styled: impl Into<String>,
-) {
-    lines.push((plain.into(), styled.into()));
+fn render_table(style: Style, now: f64, channels: &[Channel], used: &HashSet<String>) -> String {
+    let mut out = vec![style.paint(
+        "1",
+        &format!(
+            "  {:<26}{:<14}{:<12}STATUS",
+            "CHANNEL", "LAST UPDATED", "COMMIT"
+        ),
+    )];
+    for c in channels {
+        let in_use = used.contains(&c.name);
+        let updated = c.age(now).map(age_string).unwrap_or_else(|| "?".into());
+        let marker = if in_use {
+            style.paint("1;36", "▶ ")
+        } else {
+            "  ".into()
+        };
+        let name = format!("{:<26}", c.name);
+        let name = if in_use {
+            style.paint("1", &name)
+        } else {
+            name
+        };
+        out.push(format!(
+            "{marker}{name}{}{:<12}{}",
+            style.paint(c.freshness(now).color(), &format!("{updated:<14}")),
+            short(&c.revision, 10),
+            c.status
+        ));
+    }
+    out.join("\n")
 }
 
-fn push_kv(
-    lines: &mut Vec<(String, String)>,
-    ansi: bool,
-    label: &str,
-    value: &str,
-    value_color: &str,
-) {
-    let padded_label = format!("{label:<14}");
-    let plain = format!("{padded_label}{value}");
-    let styled = format!(
-        "{}{}",
-        paint(ansi, "2", &padded_label),
-        paint(ansi, value_color, value)
-    );
-    push_line(lines, plain, styled);
+fn render_json(
+    now: f64,
+    channels: &[Channel],
+    used: &HashSet<String>,
+    local: &LocalInfo,
+) -> String {
+    let items: Vec<Value> = channels
+        .iter()
+        .map(|c| {
+            json!({
+                "name": c.name,
+                "status": c.status,
+                "revision": c.revision,
+                "updated_unix": c.updated,
+                "age_seconds": c.age(now),
+                "in_use": used.contains(&c.name),
+                "system_at_head": local.revision.as_deref().map(|r| r == c.revision),
+            })
+        })
+        .collect();
+    serde_json::to_string_pretty(&json!({
+        "nixos_version": local.version,
+        "system_revision": local.revision,
+        "channels": items,
+    }))
+    .unwrap_or_default()
 }
 
-fn now_seconds() -> f64 {
-    SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .unwrap_or_default()
-        .as_secs_f64()
+// ───────────────────────────── main ─────────────────────────────
+
+fn parse_args() -> Result<Options, String> {
+    let mut opts = Options {
+        json: false,
+        color: io::stdout().is_terminal() && std::env::var_os("NO_COLOR").is_none(),
+    };
+    for arg in std::env::args().skip(1) {
+        match arg.as_str() {
+            "--json" => opts.json = true,
+            "--no-color" => opts.color = false,
+            "-V" | "--version" => {
+                println!("nixos-status {}", env!("CARGO_PKG_VERSION"));
+                std::process::exit(0);
+            }
+            "-h" | "--help" => {
+                println!("Usage: nixos-status [--json] [--no-color] [--version]");
+                std::process::exit(0);
+            }
+            other => return Err(format!("unknown argument: {other} (try --help)")),
+        }
+    }
+    Ok(opts)
 }
 
 fn main_result() -> Result<(), String> {
+    let opts = parse_args()?;
+    let style = Style {
+        enabled: opts.color,
+    };
+
     let agent: ureq::Agent = ureq::Agent::config_builder()
         .timeout_global(Some(REQUEST_TIMEOUT))
         .user_agent(concat!(
@@ -199,207 +481,33 @@ fn main_result() -> Result<(), String> {
         .build()
         .into();
 
-    let revision_rows = query(&agent, "channel_revision")?;
-    let update_rows = query(&agent, "channel_update_time")?;
-
-    let mut revisions: HashMap<String, Channel> = HashMap::new();
-    for row in &revision_rows {
-        let Some(name) = label(row, "channel") else {
-            continue;
-        };
-        let channel = Channel {
-            name: name.clone(),
-            revision: label(row, "revision").unwrap_or_else(|| "?".to_owned()),
-            status: label(row, "status").unwrap_or_else(|| "?".to_owned()),
-        };
-        revisions.insert(name, channel);
-    }
-    if revisions.is_empty() {
-        return Err("No channel data returned.".to_owned());
-    }
-
-    let mut updates: HashMap<String, f64> = HashMap::new();
-    for row in &update_rows {
-        let Some(name) = label(row, "channel") else {
-            continue;
-        };
-        let timestamp = row
-            .pointer("/value/1")
-            .and_then(Value::as_str)
-            .and_then(|value| value.parse::<f64>().ok())
-            .or_else(|| row.pointer("/value/1").and_then(Value::as_f64));
-        if let Some(timestamp) = timestamp {
-            updates.insert(name, timestamp);
-        }
-    }
-
-    let (local_channels, system_revision, system_version) = local_info();
-    let mut used: HashSet<String> = local_channels
-        .iter()
-        .map(|(_, name)| name.clone())
-        .collect();
-    if used.is_empty() {
-        used.extend(
-            revisions
-                .iter()
-                .filter(|(_, channel)| {
-                    Some(channel.revision.as_str()) == system_revision.as_deref()
-                })
-                .map(|(name, _)| name.clone()),
-        );
-    }
-
+    let channels = fetch_channels(&agent)?;
+    let local = local_info();
     let now = now_seconds();
-    let names: Vec<String> = if local_channels.is_empty() {
-        let mut names: Vec<String> = used.iter().cloned().collect();
-        names.sort();
-        names
+
+    // Which channels is this machine on?
+    let (names, used): (Vec<String>, HashSet<String>) = if !local.channels.is_empty() {
+        let names: Vec<String> = local.channels.iter().map(|(_, n)| n.clone()).collect();
+        let used = names.iter().cloned().collect();
+        (names, used)
     } else {
-        local_channels
+        // Fallback: guess from the running system's nixpkgs revision.
+        let mut names: Vec<String> = channels
             .iter()
-            .map(|(_, name)| name.clone())
-            .collect()
+            .filter(|c| Some(c.revision.as_str()) == local.revision.as_deref())
+            .map(|c| c.name.clone())
+            .collect();
+        names.sort();
+        let used = names.iter().cloned().collect();
+        (names, used)
     };
-    let labels: HashMap<String, String> = local_channels
-        .iter()
-        .map(|(label, name)| (name.clone(), label.clone()))
-        .collect();
 
-    let ansi = ansi_enabled();
-    let mut lines: Vec<(String, String)> = Vec::new();
-    let title = "Your NixOS channel";
-    push_line(&mut lines, title, paint(ansi, "1", title));
-
-    if names.is_empty() {
-        let text = "unknown (no nix-channel entries; flake/pinned system?)";
-        push_line(&mut lines, text, paint(ansi, "2", text));
+    if opts.json {
+        println!("{}", render_json(now, &channels, &used, &local));
+    } else {
+        println!("{}", render_summary(style, now, &channels, &local, &names));
+        println!("{}", render_table(style, now, &channels, &used));
     }
-
-    for name in &names {
-        push_line(&mut lines, "", "");
-        let mut head = format!("▶ {name}");
-        if let Some(label) = labels.get(name) {
-            head.push_str(&format!("  ({label})"));
-        }
-        let styled_head = format!(
-            "{}{}",
-            paint(ansi, "1;36", &format!("▶ {name}")),
-            labels
-                .get(name)
-                .map(|label| format!("  ({label})"))
-                .unwrap_or_default()
-        );
-        push_line(&mut lines, head, styled_head);
-
-        let Some(channel) = revisions.get(name) else {
-            push_kv(
-                &mut lines,
-                ansi,
-                "Status",
-                "not listed on status page",
-                "33",
-            );
-            continue;
-        };
-
-        let timestamp = updates.get(name).copied();
-        let updated = timestamp
-            .map(|ts| format!("{} ago", age(now - ts)))
-            .unwrap_or_else(|| "?".to_owned());
-        push_kv(
-            &mut lines,
-            ansi,
-            "Last updated",
-            &updated,
-            age_color(now, timestamp),
-        );
-        push_kv(
-            &mut lines,
-            ansi,
-            "Commit",
-            &channel.revision.chars().take(12).collect::<String>(),
-            "1",
-        );
-        push_kv(&mut lines, ansi, "Status", &channel.status, "1");
-
-        if let Some(system_revision) = system_revision.as_deref() {
-            if system_revision == channel.revision {
-                push_kv(&mut lines, ansi, "Your system", "at channel head", "1;32");
-            } else {
-                let description = format!(
-                    "on {} (differs)",
-                    system_revision.chars().take(12).collect::<String>()
-                );
-                push_kv(&mut lines, ansi, "Your system", &description, "1;33");
-            }
-        }
-    }
-
-    push_line(&mut lines, "", "");
-    if let Some(version) = system_version.as_deref() {
-        push_kv(&mut lines, ansi, "NixOS version", version, "1");
-    }
-    push_kv(
-        &mut lines,
-        ansi,
-        "nixos-status",
-        env!("CARGO_PKG_VERSION"),
-        "1",
-    );
-
-    println!("{}", box_lines(&lines));
-    println!();
-
-    let mut rows: Vec<&Channel> = revisions.values().collect();
-    rows.sort_by_key(|channel| {
-        let order = match channel.status.as_str() {
-            "stable" => 0,
-            "rolling" => 1,
-            "beta" => 2,
-            _ => 9,
-        };
-        (order, channel.name.clone())
-    });
-
-    println!(
-        "{}",
-        paint(
-            ansi,
-            "1",
-            &format!(
-                "  {:<26}{:<14}{:<12}STATUS",
-                "CHANNEL", "LAST UPDATED", "COMMIT"
-            )
-        )
-    );
-    for channel in rows {
-        let timestamp = updates.get(&channel.name).copied();
-        let updated = timestamp
-            .map(|ts| age(now - ts))
-            .unwrap_or_else(|| "?".to_owned());
-        let color = age_color(now, timestamp).replace("1;", "");
-        let marker = if used.contains(&channel.name) {
-            paint(ansi, "1;36", "▶ ")
-        } else {
-            "  ".to_owned()
-        };
-        let padded_name = format!("{:<26}", channel.name);
-        let name = if used.contains(&channel.name) {
-            paint(ansi, "1", &padded_name)
-        } else {
-            padded_name
-        };
-        let commit: String = channel.revision.chars().take(10).collect();
-        println!(
-            "{}{}{}{:<12}{}",
-            marker,
-            name,
-            paint(ansi, &color, &format!("{updated:<14}")),
-            commit,
-            channel.status
-        );
-    }
-
     Ok(())
 }
 
@@ -407,5 +515,56 @@ fn main() {
     if let Err(error) = main_result() {
         eprintln!("nixos-status: {error}");
         std::process::exit(1);
+    }
+}
+
+// ───────────────────────────── tests ─────────────────────────────
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn formats_ages() {
+        assert_eq!(age_string(59.0), "0m");
+        assert_eq!(age_string(3_700.0), "1h 1m");
+        assert_eq!(age_string(90_000.0), "1d 1h");
+        assert_eq!(age_string(-5.0), "0m");
+    }
+
+    #[test]
+    fn classifies_freshness() {
+        assert_eq!(Freshness::from_age(Some(DAY)), Freshness::Fresh);
+        assert_eq!(Freshness::from_age(Some(3.0 * DAY)), Freshness::Aging);
+        assert_eq!(Freshness::from_age(Some(9.0 * DAY)), Freshness::Stale);
+        assert_eq!(Freshness::from_age(None), Freshness::Stale);
+    }
+
+    #[test]
+    fn box_width_ignores_ansi() {
+        let style = Style { enabled: true };
+        let mut a = Line::default();
+        a.push(style, "1", "abc");
+        let mut b = Line::default();
+        b.push(style, "", "abcdef");
+        let boxed = box_lines(&[a, b]);
+        let widths: Vec<usize> = boxed
+            .lines()
+            .map(|l| {
+                // strip escape sequences for measuring
+                let mut n = 0;
+                let mut in_esc = false;
+                for ch in l.chars() {
+                    match (in_esc, ch) {
+                        (false, '\x1b') => in_esc = true,
+                        (true, 'm') => in_esc = false,
+                        (false, _) => n += 1,
+                        _ => {}
+                    }
+                }
+                n
+            })
+            .collect();
+        assert!(widths.windows(2).all(|w| w[0] == w[1]));
     }
 }
