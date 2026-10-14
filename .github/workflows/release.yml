@@ -57,14 +57,16 @@ jobs:
         shell: bash
         run: |
           mkdir -p dist
-          tar -C target/${{ matrix.target }}/release -czf \
-            "dist/nixos-status-${GITHUB_REF_NAME}-${{ matrix.system }}.tar.gz" nixos-status
+          # gzip -9 (smallest) instead of tar's default level; -n drops the timestamp.
+          tar -C target/${{ matrix.target }}/release -cf - nixos-status \
+            | gzip -9n > "dist/nixos-status-${GITHUB_REF_NAME}-${{ matrix.system }}.tar.gz"
 
       - uses: actions/upload-artifact@v4
         with:
           name: dist-${{ matrix.system }}
           path: dist/*.tar.gz
           if-no-files-found: error
+          retention-days: 1 # only needed until the publish job runs
 
   publish:
     needs: build

@@ -14,6 +14,9 @@
       ];
       forAllSystems = nixpkgs.lib.genAttrs systems;
 
+      # Reuse nixpkgs' own instance instead of re-importing it per output.
+      pkgsFor = system: nixpkgs.legacyPackages.${system};
+
       # release.json is written by the release workflow (.github/workflows/release.yml).
       # It holds the version plus the URL and hash of each prebuilt binary.
       release = builtins.fromJSON (builtins.readFile ./release.json);
@@ -32,12 +35,21 @@
       sourcePackageFor =
         system:
         let
-          pkgs = import nixpkgs { inherit system; };
+          pkgs = pkgsFor system;
         in
         pkgs.rustPlatform.buildRustPackage {
           pname = "nixos-status";
           version = cargoVersion;
-          src = ./.;
+          # Only what cargo needs. Editing README, workflows, release.json,
+          # scripts, ... does not change this source, so nothing rebuilds.
+          src = pkgs.lib.fileset.toSource {
+            root = ./.;
+            fileset = pkgs.lib.fileset.unions [
+              ./Cargo.toml
+              ./Cargo.lock
+              ./src
+            ];
+          };
           cargoLock.lockFile = ./Cargo.lock;
           doCheck = true;
           meta = metaFor pkgs;
@@ -47,7 +59,7 @@
       binaryPackageFor =
         system: asset:
         let
-          pkgs = import nixpkgs { inherit system; };
+          pkgs = pkgsFor system;
         in
         pkgs.stdenv.mkDerivation {
           pname = "nixos-status";
@@ -84,6 +96,11 @@
         source = sourcePackageFor system;
       });
 
+      # `nix flake check`: builds from source and runs `cargo test` in the sandbox.
+      checks = forAllSystems (system: {
+        source = self.packages.${system}.source;
+      });
+
       apps = forAllSystems (system: {
         default = {
           type = "app";
@@ -95,22 +112,27 @@
       devShells = forAllSystems (
         system:
         let
-          pkgs = import nixpkgs { inherit system; };
+          pkgs = pkgsFor system;
         in
         {
           default = pkgs.mkShell {
             packages = with pkgs; [
               cargo
               rustc
-              rustfmt
               clippy
+              rustfmt
+              rust-analyzer
+              cargo-bloat # `just bloat`: what takes space in the binary
+              just # task runner, see justfile
               git
-              nixfmt-rfc-style
+              nixfmt
             ];
+            # Lets rust-analyzer find the std sources.
+            env.RUST_SRC_PATH = "${pkgs.rustPlatform.rustLibSrc}";
           };
         }
       );
 
-      formatter = forAllSystems (system: (import nixpkgs { inherit system; }).nixfmt-rfc-style);
+      formatter = forAllSystems (system: (pkgsFor system).nixfmt);
     };
 }

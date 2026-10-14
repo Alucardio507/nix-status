@@ -1,0 +1,43 @@
+name: Nix
+
+# Checks that the flake still evaluates and builds from source.
+# Skipped for README / LICENSE / docs-only changes.
+on:
+  push:
+    branches: [main]
+    paths:
+      - "flake.nix"
+      - "flake.lock"
+      - "release.json"
+      - "src/**"
+      - "Cargo.toml"
+      - "Cargo.lock"
+      - ".github/workflows/nix.yml"
+  pull_request:
+    paths:
+      - "flake.nix"
+      - "flake.lock"
+      - "release.json"
+      - "src/**"
+      - "Cargo.toml"
+      - "Cargo.lock"
+      - ".github/workflows/nix.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  flake:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      # Only installs Nix itself. No binary cache is used.
+      - uses: cachix/install-nix-action@v31
+      # Evaluates every output and builds checks.<system>.source
+      # (cargo build + cargo test inside the Nix sandbox).
+      - run: nix flake check --print-build-logs

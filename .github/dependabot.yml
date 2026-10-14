@@ -1,0 +1,15 @@
+version: 2
+updates:
+  # Keeps action versions in the workflows current.
+  - package-ecosystem: github-actions
+    directory: /
+    schedule:
+      interval: monthly
+  # One grouped PR per month instead of one per crate.
+  - package-ecosystem: cargo
+    directory: /
+    schedule:
+      interval: monthly
+    groups:
+      cargo:
+        patterns: ["*"]

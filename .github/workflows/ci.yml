@@ -1,27 +1,41 @@
 name: CI
 
+# Runs only when something that can change the Rust build changes.
+# README / LICENSE / release.json / flake files / docs do NOT trigger it.
 on:
   push:
     branches: [main]
+    paths:
+      - "src/**"
+      - "Cargo.toml"
+      - "Cargo.lock"
+      - ".github/workflows/ci.yml"
   pull_request:
+    paths:
+      - "src/**"
+      - "Cargo.toml"
+      - "Cargo.lock"
+      - ".github/workflows/ci.yml"
+  workflow_dispatch:
 
 permissions:
   contents: read
+
+# A newer push to the same branch/PR makes the older run pointless.
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  CARGO_TERM_COLOR: always
+  CARGO_INCREMENTAL: 0
 
 jobs:
   rust:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
+      - uses: Swatinem/rust-cache@v2
       - run: cargo fmt --check
       - run: cargo clippy --locked -- -D warnings
       - run: cargo test --locked
-
-  nix:
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v4
-      # Only installs Nix itself. No binary cache is used.
-      - uses: cachix/install-nix-action@v31
-      - run: nix flake check
-      - run: nix build .#source --print-build-logs
