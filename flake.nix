@@ -1,5 +1,5 @@
 {
-  description = "A tiny terminal dashboard for NixOS channel status";
+  description = "CLI NixOS channel status display";
 
   inputs.nixpkgs.url = "github:NixOS/nixpkgs/nixos-unstable";
 
