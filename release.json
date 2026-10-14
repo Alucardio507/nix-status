@@ -1,21 +1,21 @@
 {
-  "version": "0.1.4",
+  "version": "0.1.5",
   "assets": {
     "x86_64-linux": {
-      "url": "https://github.com/Alucardio507/nix-status/releases/download/v0.1.4/nixos-status-v0.1.4-x86_64-linux.tar.gz",
-      "hash": "sha256-4IxRH2zg4osufWi1L1o2leywh99dLx8GvuvqafDD+0A="
+      "url": "https://github.com/Alucardio507/nix-status/releases/download/v0.1.5/nixos-status-v0.1.5-x86_64-linux.tar.gz",
+      "hash": "sha256-/9dcuB7rgHyT8Q/zxj7zHW1u6D2FU4J6aY1nmbl/vEo="
     },
     "aarch64-linux": {
-      "url": "https://github.com/Alucardio507/nix-status/releases/download/v0.1.4/nixos-status-v0.1.4-aarch64-linux.tar.gz",
-      "hash": "sha256-z4Z5sQv45fqZgs4EkK4ucUkPrFG36YVIpAlaB07xn+4="
+      "url": "https://github.com/Alucardio507/nix-status/releases/download/v0.1.5/nixos-status-v0.1.5-aarch64-linux.tar.gz",
+      "hash": "sha256-nC6WsGGkjKY13IbjENd0v069ram7y6FHooT6M/a2a5U="
     },
     "x86_64-darwin": {
-      "url": "https://github.com/Alucardio507/nix-status/releases/download/v0.1.4/nixos-status-v0.1.4-x86_64-darwin.tar.gz",
-      "hash": "sha256-fRUsMmbNH9RJ0SVrVxA6ZIfQ/JVzh+JYuhlsJ50DbxE="
+      "url": "https://github.com/Alucardio507/nix-status/releases/download/v0.1.5/nixos-status-v0.1.5-x86_64-darwin.tar.gz",
+      "hash": "sha256-2Tym0Lw4Ea/+USC/X8G3DeUv8lf9VosDpYWmvI+/wmY="
     },
     "aarch64-darwin": {
-      "url": "https://github.com/Alucardio507/nix-status/releases/download/v0.1.4/nixos-status-v0.1.4-aarch64-darwin.tar.gz",
-      "hash": "sha256-efh2pOClsxV+sWgztruwhh2lo3FtanPKE3Szw/1u/90="
+      "url": "https://github.com/Alucardio507/nix-status/releases/download/v0.1.5/nixos-status-v0.1.5-aarch64-darwin.tar.gz",
+      "hash": "sha256-zRqzs+ZPw7MA4XPUWfNEOSdpgAzkyJZiDTYl6PUE2Wo="
     }
   }
 }
