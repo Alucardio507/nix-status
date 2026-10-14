@@ -20,7 +20,7 @@ ci: check
 # Format Rust and Nix
 fmt:
     cargo fmt
-    nix fmt
+    nixfmt -
 
 # Release binary size at opt-level z (current) vs s, so size changes are measured, not guessed
 size:
