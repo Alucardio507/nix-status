@@ -23,7 +23,7 @@ git rev-parse -q --verify "refs/tags/${tag}" >/dev/null && die "tag ${tag} alrea
 
 # Replace only the first `version = "..."` line, which is the [package] one.
 V="$version" perl -0pi -e 's/^version = "[^"]*"/version = "$ENV{V}"/m' Cargo.toml
-cargo check --quiet # refreshes the nixos-status entry in Cargo.lock
+cargo check --quiet # refreshes the status-nixos entry in Cargo.lock
 
 cargo fmt --check
 cargo clippy --locked --quiet -- -D warnings

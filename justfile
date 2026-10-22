@@ -29,7 +29,7 @@ size:
     for level in z s; do
         CARGO_PROFILE_RELEASE_OPT_LEVEL=$level \
             cargo build --release --locked --quiet --target-dir "target/size-$level"
-        printf 'opt-level=%s  %s bytes\n' "$level" "$(wc -c < "target/size-$level/release/nixos-status")"
+        printf 'opt-level=%s  %s bytes\n' "$level" "$(wc -c < "target/size-$level/release/status-nixos")"
     done
 
 # Which crates take space in the release binary (symbols kept just for this run)

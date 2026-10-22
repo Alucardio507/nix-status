@@ -26,7 +26,7 @@
         description = "Show NixOS channel status in the terminal";
         homepage = "https://status.nixos.org/";
         license = pkgs.lib.licenses.mit;
-        mainProgram = "nixos-status";
+        mainProgram = "status-nixos";
         platforms = systems;
       };
 
@@ -38,7 +38,7 @@
           pkgs = pkgsFor system;
         in
         pkgs.rustPlatform.buildRustPackage {
-          pname = "nixos-status";
+          pname = "status-nixos";
           version = cargoVersion;
           # Only what cargo needs. Editing README, workflows, release.json,
           # scripts, ... does not change this source, so nothing rebuilds.
@@ -62,7 +62,7 @@
           pkgs = pkgsFor system;
         in
         pkgs.stdenv.mkDerivation {
-          pname = "nixos-status";
+          pname = "status-nixos";
           version = release.version;
           src = pkgs.fetchurl { inherit (asset) url hash; };
           dontUnpack = true;
@@ -73,8 +73,8 @@
           dontFixup = true;
           installPhase = ''
             mkdir -p $out/bin
-            tar -xzf $src -C $out/bin nixos-status
-            chmod +x $out/bin/nixos-status
+            tar -xzf $src -C $out/bin status-nixos
+            chmod +x $out/bin/status-nixos
           '';
           meta = (metaFor pkgs) // {
             sourceProvenance = [ pkgs.lib.sourceTypes.binaryNativeCode ];
@@ -91,7 +91,7 @@
     {
       packages = forAllSystems (system: rec {
         default = defaultPackageFor system;
-        nixos-status = default;
+        status-nixos = default;
         # Always compiles from source, ignoring release.json.
         source = sourcePackageFor system;
       });
@@ -104,9 +104,9 @@
       apps = forAllSystems (system: {
         default = {
           type = "app";
-          program = "${self.packages.${system}.default}/bin/nixos-status";
+          program = "${self.packages.${system}.default}/bin/status-nixos";
         };
-        nixos-status = self.apps.${system}.default;
+        status-nixos = self.apps.${system}.default;
       });
 
       devShells = forAllSystems (

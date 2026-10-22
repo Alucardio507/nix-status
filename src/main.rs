@@ -1,4 +1,4 @@
-//! nixos-status: show how fresh your NixOS channel(s) are, using
+//! status-nixos: show how fresh your NixOS channel(s) are, using
 //! the public NixOS Prometheus instance.
 //!
 //! Flags: --json, --no-color, --flake PATH, -h/--help, -V/--version
@@ -884,7 +884,7 @@ fn render_summary(
     if let Some(v) = local.version.as_deref() {
         lines.push(kv(style, "NixOS version", v, "1"));
     }
-    lines.push(kv(style, "nixos-status", env!("CARGO_PKG_VERSION"), "1"));
+    lines.push(kv(style, "status-nixos", env!("CARGO_PKG_VERSION"), "1"));
     box_lines(&lines)
 }
 
@@ -1013,11 +1013,11 @@ fn parse_args() -> Result<Options, String> {
                 );
             }
             "-V" | "--version" => {
-                println!("nixos-status {}", env!("CARGO_PKG_VERSION"));
+                println!("status-nixos {}", env!("CARGO_PKG_VERSION"));
                 std::process::exit(0);
             }
             "-h" | "--help" => {
-                println!("Usage: nixos-status [--json] [--no-color] [--flake PATH] [--version]");
+                println!("Usage: status-nixos [--json] [--no-color] [--flake PATH] [--version]");
                 std::process::exit(0);
             }
             other => return Err(format!("unknown argument: {other} (try --help)")),
@@ -1070,7 +1070,7 @@ fn main_result() -> Result<(), String> {
 
 fn main() {
     if let Err(error) = main_result() {
-        eprintln!("nixos-status: {error}");
+        eprintln!("status-nixos: {error}");
         std::process::exit(1);
     }
 }

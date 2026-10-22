@@ -1,4 +1,4 @@
-# nixos-status
+# status-nixos
 Rust CLI for [status.nixos.org](https://status.nixos.org/). It identifies your
 local `nix-channel` entries, compares the running system revision with the
 channel head, and prints the installed NixOS version when available.
@@ -14,10 +14,10 @@ from source instead: `nix run github:Alucardio507/nix-status#source`.
 
 ## Usage
 ```sh
-nixos-status              # summary box + table of all channels
-nixos-status --json       # machine-readable output
-nixos-status --no-color   # also honours NO_COLOR
-nixos-status --flake ~/my-config   # use a specific flake.lock (file or directory)
+status-nixos              # summary box + table of all channels
+status-nixos --json       # machine-readable output
+status-nixos --no-color   # also honours NO_COLOR
+status-nixos --flake ~/my-config   # use a specific flake.lock (file or directory)
 ```
 
 ### Which channel am I on?

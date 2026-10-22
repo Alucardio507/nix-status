@@ -58,8 +58,8 @@ jobs:
         run: |
           mkdir -p dist
           # gzip -9 (smallest) instead of tar's default level; -n drops the timestamp.
-          tar -C target/${{ matrix.target }}/release -cf - nixos-status \
-            | gzip -9n > "dist/nixos-status-${GITHUB_REF_NAME}-${{ matrix.system }}.tar.gz"
+          tar -C target/${{ matrix.target }}/release -cf - status-nixos \
+            | gzip -9n > "dist/status-nixos-${GITHUB_REF_NAME}-${{ matrix.system }}.tar.gz"
 
       - uses: actions/upload-artifact@v7
         with:
@@ -97,7 +97,7 @@ jobs:
           version="${GITHUB_REF_NAME#v}"
           json=$(jq -n --arg v "$version" '{version: $v, assets: {}}')
           for system in x86_64-linux aarch64-linux x86_64-darwin aarch64-darwin; do
-            file="nixos-status-${GITHUB_REF_NAME}-${system}.tar.gz"
+            file="status-nixos-${GITHUB_REF_NAME}-${system}.tar.gz"
             hash="sha256-$(openssl dgst -sha256 -binary "dist/${file}" | base64)"
             url="https://github.com/${GITHUB_REPOSITORY}/releases/download/${GITHUB_REF_NAME}/${file}"
             json=$(echo "$json" | jq --arg s "$system" --arg u "$url" --arg h "$hash" \

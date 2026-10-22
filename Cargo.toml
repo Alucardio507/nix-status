@@ -1,6 +1,6 @@
 [package]
-name = "nixos-status"
-version = "0.1.5"
+name = "status-nixos"
+version = "0.1.6"
 edition = "2024"
 rust-version = "1.85" # minimum for edition 2024
 description = "terminal display for NixOS channel status"
