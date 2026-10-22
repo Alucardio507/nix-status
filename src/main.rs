@@ -1,5 +1,6 @@
 //! status-nixos: show how fresh your NixOS channel(s) are, using
-//! the public NixOS Prometheus instance.
+//! the public NixOS Prometheus instance. Channel status comes from Prometheus;
+//! no build jobs are queried.
 //!
 //! Flags: --json, --no-color, --flake PATH, -h/--help, -V/--version
 //! Env:   NO_COLOR is respected.
@@ -12,8 +13,7 @@ use std::process::Command;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 const PROMETHEUS_API: &str = "https://prometheus.nixos.org/api/v1/query";
-const HYDRA_URL: &str = "https://hydra.nixos.org";
-const REQUEST_TIMEOUT: Duration = Duration::from_secs(15);
+const REQUEST_TIMEOUT: Duration = Duration::from_secs(5);
 const DAY: f64 = 86_400.0;
 const FRESH_DAYS: f64 = 2.0;
 const AGING_DAYS: f64 = 5.0;
@@ -29,42 +29,6 @@ struct Channel {
     status: String,
     /// Unix timestamp of the last channel update, if known.
     updated: Option<f64>,
-    /// Latest finished build of the channel's blocking Hydra job (`tested`).
-    /// `None` = not checked (unmaintained channel) or Hydra unreachable.
-    hydra: Option<HydraBuild>,
-}
-
-/// A finished Hydra build of a channel's blocking job.
-#[derive(Debug, Clone)]
-struct HydraBuild {
-    id: u64,
-    /// Hydra `buildstatus`; 0 = succeeded.
-    status: i64,
-    stopped: Option<f64>,
-}
-
-impl HydraBuild {
-    fn ok(&self) -> bool {
-        self.status == 0
-    }
-    fn url(&self) -> String {
-        format!("{HYDRA_URL}/build/{}", self.id)
-    }
-    fn status_text(&self) -> &'static str {
-        match self.status {
-            0 => "succeeded",
-            1 => "failed",
-            2 => "dependency failed",
-            3 | 9 => "aborted",
-            4 => "cancelled",
-            6 => "failed with output",
-            7 => "timed out",
-            8 => "cached failure",
-            10 => "log limit exceeded",
-            12 => "not deterministic",
-            _ => "failed",
-        }
-    }
 }
 
 impl Channel {
@@ -73,16 +37,6 @@ impl Channel {
     }
     fn freshness(&self, now: f64) -> Freshness {
         Freshness::from_age(self.updated.filter(|ts| *ts > 0.0).map(|ts| now - ts))
-    }
-    /// True only when the channel's blocking job really failed: failures of
-    /// individual packages that are not part of `tested` do not count.
-    fn build_problem(&self) -> bool {
-        self.hydra.as_ref().is_some_and(|b| !b.ok())
-    }
-    /// Unmaintained/deprecated channels are expected to be frozen, so their
-    /// Hydra state is neither checked nor reported.
-    fn maintained(&self) -> bool {
-        !matches!(self.status.as_str(), "unmaintained" | "deprecated" | "eol")
     }
     fn status_order(&self) -> u8 {
         match self.status.as_str() {
@@ -323,36 +277,25 @@ fn query(agent: &ureq::Agent, metric: &str) -> Result<Vec<Value>, String> {
         .ok_or_else(|| format!("malformed Prometheus response for {metric}: missing data.result"))
 }
 
-/// Fetch both metrics in parallel and merge them into one list of channels.
-fn fetch_channels(agent: &ureq::Agent) -> Result<Vec<Channel>, String> {
-    let (revision_rows, update_rows) = std::thread::scope(|s| {
-        let revs = s.spawn(|| query(agent, "channel_revision"));
-        let upds = s.spawn(|| query(agent, "channel_update_time"));
-        let panicked = || Err("worker thread panicked".to_string());
-        (
-            revs.join().unwrap_or_else(|_| panicked()),
-            upds.join().unwrap_or_else(|_| panicked()),
-        )
-    });
-    let (revision_rows, update_rows) = (revision_rows?, update_rows?);
-
-    // Prometheus encodes sample values as strings: ["<ts>", "<value>"].
-    let updates: HashMap<String, f64> = update_rows
+/// Parse the combined result from the two channel metrics.
+fn parse_channels(rows: &[Value]) -> Result<Vec<Channel>, String> {
+    let updates: HashMap<String, f64> = rows
         .iter()
+        .filter(|row| label(row, "__name__").as_deref() == Some("channel_update_time"))
         .filter_map(|row| {
             let name = label(row, "channel")?;
-            let ts = row.pointer("/value/1")?.as_str()?.parse::<f64>().ok()?;
-            Some((name, ts))
+            let timestamp = row.pointer("/value/1")?.as_str()?.parse::<f64>().ok()?;
+            Some((name, timestamp))
         })
         .collect();
 
-    let mut channels: Vec<Channel> = revision_rows
+    let mut channels: Vec<Channel> = rows
         .iter()
+        .filter(|row| label(row, "__name__").as_deref() == Some("channel_revision"))
         .filter_map(|row| {
             let name = label(row, "channel")?;
             Some(Channel {
                 updated: updates.get(&name).copied(),
-                hydra: None,
                 revision: label(row, "revision").unwrap_or_else(|| "?".into()),
                 status: label(row, "status").unwrap_or_else(|| "?".into()),
                 name,
@@ -361,88 +304,21 @@ fn fetch_channels(agent: &ureq::Agent) -> Result<Vec<Channel>, String> {
         .collect();
 
     if channels.is_empty() {
-        return Err("No channel data returned.".into());
+        return Err("No channel data returned by Prometheus.".into());
     }
+
     channels.sort_by(|a, b| (a.status_order(), &a.name).cmp(&(b.status_order(), &b.name)));
     channels.dedup_by(|a, b| a.name == b.name);
     Ok(channels)
 }
 
-/// The Hydra job that must succeed before a channel advances (same mapping as
-/// nixos-org-configurations / nixos-channel-scripts), e.g.
-/// `nixos-25.05-small` -> `nixos/release-25.05-small/tested`.
-fn hydra_job(channel: &str) -> Option<String> {
-    let is_version = |v: &str| {
-        v.len() == 5
-            && v.as_bytes()[2] == b'.'
-            && v.bytes()
-                .enumerate()
-                .all(|(i, b)| i == 2 || b.is_ascii_digit())
-    };
-    match channel {
-        "nixos-unstable" => return Some("nixos/trunk-combined/tested".into()),
-        "nixos-unstable-small" => return Some("nixos/unstable-small/tested".into()),
-        "nixpkgs-unstable" => return Some("nixpkgs/trunk/unstable".into()),
-        _ => {}
-    }
-    if let Some(rest) = channel.strip_prefix("nixos-") {
-        let (version, suffix) = match rest.split_once('-') {
-            Some((v, s)) => (v, Some(s)),
-            None => (rest, None),
-        };
-        return match (is_version(version), suffix) {
-            (true, None) => Some(format!("nixos/release-{version}/tested")),
-            (true, Some(s @ ("small" | "aarch64"))) => {
-                Some(format!("nixos/release-{version}-{s}/tested"))
-            }
-            _ => None,
-        };
-    }
-    let version = channel.strip_prefix("nixpkgs-")?.strip_suffix("-darwin")?;
-    is_version(version).then(|| format!("nixpkgs/nixpkgs-{version}-darwin/darwin-tested"))
-}
-
-/// Latest finished build of a Hydra job, as JSON. `None` on any problem, so a
-/// Hydra outage never produces a false warning.
-fn fetch_hydra_build(agent: &ureq::Agent, job: &str) -> Option<HydraBuild> {
-    let mut response = agent
-        .get(&format!("{HYDRA_URL}/job/{job}/latest-finished"))
-        .header("Accept", "application/json")
-        .call()
-        .ok()?;
-    if !response.status().is_success() {
-        return None;
-    }
-    let body = response.body_mut().read_to_string().ok()?;
-    let v: Value = serde_json::from_str(&body).ok()?;
-    if v.get("finished").and_then(Value::as_i64) == Some(0) {
-        return None;
-    }
-    Some(HydraBuild {
-        id: v.get("id")?.as_u64()?,
-        status: v.get("buildstatus").and_then(Value::as_i64)?,
-        stopped: v.get("stoptime").and_then(Value::as_f64),
-    })
-}
-
-/// Check the blocking job of every maintained channel, in parallel.
-fn check_builds(agent: &ureq::Agent, channels: &mut [Channel]) {
-    let results: Vec<Option<HydraBuild>> = std::thread::scope(|s| {
-        let handles: Vec<_> = channels
-            .iter()
-            .map(|c| {
-                let job = c.maintained().then(|| hydra_job(&c.name)).flatten();
-                s.spawn(move || fetch_hydra_build(agent, &job?))
-            })
-            .collect();
-        handles
-            .into_iter()
-            .map(|h| h.join().unwrap_or(None))
-            .collect()
-    });
-    for (channel, build) in channels.iter_mut().zip(results) {
-        channel.hydra = build;
-    }
+/// Fetch revisions, statuses, and update times in one bounded-time request.
+fn fetch_channels(agent: &ureq::Agent) -> Result<Vec<Channel>, String> {
+    let rows = query(
+        agent,
+        r#"{__name__=~"channel_revision|channel_update_time"}"#,
+    )?;
+    parse_channels(&rows)
 }
 
 // ───────────────────────────── local system ─────────────────────────────
@@ -771,34 +647,6 @@ fn render_summary(
     title.push(style, "1", "Your NixOS channel");
     lines.push(title);
 
-    // Loud warning first, so it cannot be missed.
-    let broken: Vec<&str> = detected
-        .iter()
-        .filter(|d| {
-            by_name
-                .get(d.name.as_str())
-                .is_some_and(|c| c.build_problem())
-        })
-        .map(|d| d.name.as_str())
-        .collect();
-    if !broken.is_empty() {
-        lines.push(Line::default());
-        let mut w = Line::default();
-        w.push(
-            style,
-            "1;97;41",
-            &format!(" ⚠ BUILD ERRORS on your channel: {} ", broken.join(", ")),
-        );
-        lines.push(w);
-        let mut w = Line::default();
-        w.push(
-            style,
-            "1;31",
-            "  The latest Hydra `tested` job failed, so the channel is not advancing.",
-        );
-        lines.push(w);
-    }
-
     if detected.is_empty() {
         let mut l = Line::default();
         l.push(
@@ -833,23 +681,6 @@ fn render_summary(
         }
         lines.push(kv(style, "Commit", &short(&channel.revision, 12), "1"));
         lines.push(kv(style, "Status", &channel.status, "1"));
-        match channel.hydra.as_ref() {
-            Some(b) if !b.ok() => {
-                let since = b
-                    .stopped
-                    .map(|t| format!(" {} ago", age_string(now - t)))
-                    .unwrap_or_default();
-                lines.push(kv(
-                    style,
-                    "Build",
-                    &format!("⚠ tested job {}{since}", b.status_text()),
-                    "1;31",
-                ));
-                lines.push(kv(style, "Hydra", &b.url(), "0"));
-            }
-            Some(_) => lines.push(kv(style, "Build", "ok (tested job passed)", "1;32")),
-            None => {}
-        }
 
         let pinned = d
             .rev
@@ -910,12 +741,7 @@ fn render_table(style: Style, now: f64, channels: &[Channel], used: &HashSet<Str
         } else {
             name
         };
-        let status = if c.build_problem() {
-            let code = if in_use { "1;97;41" } else { "1;31" };
-            format!("{} {}", c.status, style.paint(code, "⚠ BUILD ERRORS"))
-        } else {
-            c.status.clone()
-        };
+        let status = c.status.clone();
         out.push(format!(
             "{marker}{name}{}{:<14}{status}",
             style.paint(c.freshness(now).color(), &format!("{updated:<AGE_WIDTH$}")),
@@ -923,34 +749,6 @@ fn render_table(style: Style, now: f64, channels: &[Channel], used: &HashSet<Str
         ));
     }
     out.join("\n")
-}
-
-/// Footer listing every channel with build errors, most important first.
-fn render_warnings(style: Style, channels: &[Channel], used: &HashSet<String>) -> Option<String> {
-    let (mine, others): (Vec<&Channel>, Vec<&Channel>) = channels
-        .iter()
-        .filter(|c| c.build_problem())
-        .partition(|c| used.contains(&c.name));
-    let names = |v: &[&Channel]| {
-        v.iter()
-            .map(|c| c.name.as_str())
-            .collect::<Vec<_>>()
-            .join(", ")
-    };
-    let mut out = Vec::new();
-    if !mine.is_empty() {
-        out.push(style.paint(
-            "1;31",
-            &format!("⚠ Build errors on YOUR channel: {}", names(&mine)),
-        ));
-    }
-    if !others.is_empty() {
-        out.push(style.paint(
-            "33",
-            &format!("⚠ Build errors on other channels: {}", names(&others)),
-        ));
-    }
-    (!out.is_empty()).then(|| out.join("\n"))
 }
 
 fn render_json(now: f64, channels: &[Channel], detected: &[Detected], local: &LocalInfo) -> String {
@@ -966,9 +764,6 @@ fn render_json(now: f64, channels: &[Channel], detected: &[Detected], local: &Lo
                 "updated_utc": c.updated.filter(|ts| *ts > 0.0).map(utc_string),
                 "age_seconds": c.age(now),
                 "in_use": used.contains(c.name.as_str()),
-                "build_ok": c.hydra.as_ref().map(HydraBuild::ok),
-                "hydra_build_id": c.hydra.as_ref().map(|b| b.id),
-                "build_problem": c.build_problem(),
                 "system_at_head": local.revision.as_deref().map(|r| r == c.revision),
             })
         })
@@ -1044,8 +839,7 @@ fn main_result() -> Result<(), String> {
         .build()
         .into();
 
-    let mut channels = fetch_channels(&agent)?;
-    check_builds(&agent, &mut channels);
+    let channels = fetch_channels(&agent)?;
     let local = local_info(&opts);
     let now = now_seconds();
 
@@ -1061,9 +855,6 @@ fn main_result() -> Result<(), String> {
             render_summary(style, now, &channels, &local, &detected)
         );
         println!("{}", render_table(style, now, &channels, &used));
-        if let Some(warnings) = render_warnings(style, &channels, &used) {
-            println!("\n{warnings}");
-        }
     }
     Ok(())
 }
@@ -1161,7 +952,6 @@ mod tests {
             revision: rev.into(),
             status: "stable".into(),
             updated: None,
-            hydra: None,
         };
         let channels = vec![ch("nixos-25.05", "abc"), ch("nixos-unstable", "def")];
         let local = LocalInfo {
@@ -1187,63 +977,36 @@ mod tests {
     }
 
     #[test]
-    fn hydra_jobs() {
-        assert_eq!(
-            hydra_job("nixos-unstable").as_deref(),
-            Some("nixos/trunk-combined/tested")
-        );
-        assert_eq!(
-            hydra_job("nixos-25.05").as_deref(),
-            Some("nixos/release-25.05/tested")
-        );
-        assert_eq!(
-            hydra_job("nixos-25.05-small").as_deref(),
-            Some("nixos/release-25.05-small/tested")
-        );
-        assert_eq!(
-            hydra_job("nixos-25.05-aarch64").as_deref(),
-            Some("nixos/release-25.05-aarch64/tested")
-        );
-        assert_eq!(
-            hydra_job("nixpkgs-25.05-darwin").as_deref(),
-            Some("nixpkgs/nixpkgs-25.05-darwin/darwin-tested")
-        );
-        assert_eq!(
-            hydra_job("nixpkgs-unstable").as_deref(),
-            Some("nixpkgs/trunk/unstable")
-        );
-        assert_eq!(hydra_job("something-else"), None);
-    }
+    fn parses_statuses_and_update_times_from_combined_metrics() {
+        let rows = vec![
+            json!({
+                "metric": { "__name__": "channel_revision", "channel": "nixos-unstable", "revision": "aaa", "status": "rolling" },
+                "value": ["1", "1"]
+            }),
+            json!({
+                "metric": { "__name__": "channel_revision", "channel": "nixos-25.05", "revision": "bbb", "status": "stable" },
+                "value": ["1", "1"]
+            }),
+            json!({
+                "metric": { "__name__": "channel_revision", "channel": "nixos-24.11", "revision": "ccc", "status": "unmaintained" },
+                "value": ["1", "1"]
+            }),
+            json!({
+                "metric": { "__name__": "channel_update_time", "channel": "nixos-25.05" },
+                "value": ["1", "1735689600"]
+            }),
+        ];
 
-    #[test]
-    fn unmaintained_is_never_a_build_problem() {
-        let c = Channel {
-            name: "nixos-25.11".into(),
-            revision: "r".into(),
-            status: "unmaintained".into(),
-            updated: None,
-            hydra: None,
-        };
-        assert!(!c.maintained());
-        assert!(!c.build_problem());
-    }
-
-    #[test]
-    fn build_problem_flag() {
-        let mut c = Channel {
-            name: "x".into(),
-            revision: "r".into(),
-            status: "stable".into(),
-            updated: None,
-            hydra: None,
-        };
-        assert!(!c.build_problem());
-        c.hydra = Some(HydraBuild {
-            id: 1,
-            status: 1,
-            stopped: None,
-        });
-        assert!(c.build_problem());
+        let channels = parse_channels(&rows).unwrap();
+        assert_eq!(
+            channels
+                .iter()
+                .map(|c| c.status.as_str())
+                .collect::<Vec<_>>(),
+            vec!["stable", "rolling", "unmaintained"]
+        );
+        assert_eq!(channels[0].updated, Some(1_735_689_600.0));
+        assert_eq!(channels[1].updated, None);
     }
 
     #[test]
