@@ -501,7 +501,7 @@ fn flake_node_candidate(label: &str, node: &Value, source: &str) -> Option<Candi
     match original.get("type")?.as_str()? {
         "github" => {
             let owner = text(original, "owner")?.to_ascii_lowercase();
-            if owner != "nixos" || text(original, "repo")?.to_ascii_lowercase() != "nixpkgs" {
+            if owner != "nixos" || text(original, "repo")?.eq_ignore_ascii_case() != "nixpkgs" {
                 return None;
             }
             match text(original, "ref") {
