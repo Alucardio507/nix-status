@@ -5,12 +5,12 @@ channel head, and prints the installed NixOS version when available.
 
 ## Install / run
 ```sh
-nix run github:Alucardio507/nix-status            # try it
-nix profile install github:Alucardio507/nix-status
+nix run github:Alucardio507/status-nixos           # try it
+nix profile install github:Alucardio507/status-nixos
 ```
 
 The flake downloads the prebuilt binary listed in `release.json`. To compile
-from source instead: `nix run github:Alucardio507/nix-status#source`.
+from source instead: `nix run github:Alucardio507/status-nixos#source`.
 
 ## Usage
 ```sh
